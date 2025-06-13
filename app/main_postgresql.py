@@ -19,21 +19,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Track database status
+database_available = True
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown events"""
+    global database_available
+    
     # Startup
-    logger.info("Starting Eindr Email Capture API with PostgreSQL...")
+    logger.info("🚀 Starting Eindr Email Capture API with PostgreSQL...")
+    
     try:
         await create_tables()
-        logger.info("PostgreSQL database tables created/verified")
+        database_available = True
+        logger.info("✅ Database initialization successful")
     except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
-        raise
+        logger.error(f"❌ Database initialization failed: {e}")
+        database_available = False
+        logger.warning("⚠️  API will start without database - check Railway PostgreSQL service")
+    
     yield
+    
     # Shutdown
-    logger.info("Shutting down Eindr Email Capture API...")
+    logger.info("🛑 Shutting down Eindr Email Capture API...")
     await close_database()
 
 
@@ -79,10 +89,15 @@ async def root():
 
 @app.get("/health", response_model=HealthCheckResponse)
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint with database status"""
+    global database_available
+    
+    status = "healthy" if database_available else "degraded"
+    
     return HealthCheckResponse(
-        status="healthy",
-        timestamp=datetime.utcnow()
+        status=status,
+        timestamp=datetime.utcnow(),
+        database_status="connected" if database_available else "disconnected"
     )
 
 
@@ -92,8 +107,17 @@ async def submit_email(
     db: AsyncSession = Depends(get_database_session)
 ):
     """Submit an email address for the Eindr landing page"""
+    global database_available
+    
+    if not database_available:
+        logger.warning("Database not available, returning error response")
+        raise HTTPException(
+            status_code=503,
+            detail="Database service is currently unavailable. Please try again later."
+        )
+    
     try:
-        logger.info(f"Received email submission request: {email_request.email}")
+        logger.info(f"📧 Received email submission: {email_request.email}")
         
         # Check if email already exists
         query = select(Email).where(Email.email == email_request.email.lower().strip())
@@ -101,7 +125,7 @@ async def submit_email(
         existing_email = result.scalar_one_or_none()
         
         if existing_email:
-            logger.info(f"Email already exists: {email_request.email}")
+            logger.info(f"🔄 Email already exists: {email_request.email}")
             return EmailSubmissionResponse(
                 success=True,
                 message="Email already registered. Thank you for your interest!",
@@ -114,7 +138,7 @@ async def submit_email(
         await db.commit()
         await db.refresh(new_email)
         
-        logger.info(f"New email submitted successfully to PostgreSQL: {email_request.email}")
+        logger.info(f"✅ New email registered: {email_request.email}")
         return EmailSubmissionResponse(
             success=True,
             message="Email successfully registered. We'll keep you updated!",
@@ -141,6 +165,17 @@ async def submit_email(
 @app.get("/stats")
 async def get_stats(db: AsyncSession = Depends(get_database_session)):
     """Get basic statistics about email submissions"""
+    global database_available
+    
+    if not database_available:
+        return {
+            "total_emails": "unavailable",
+            "timestamp": datetime.utcnow(),
+            "storage_type": "PostgreSQL Database",
+            "database": "eindr_lp",
+            "status": "database_unavailable"
+        }
+    
     try:
         query = select(Email)
         result = await db.execute(query)
@@ -151,20 +186,33 @@ async def get_stats(db: AsyncSession = Depends(get_database_session)):
             "total_emails": total_emails,
             "timestamp": datetime.utcnow(),
             "storage_type": "PostgreSQL Database",
-            "database": "eindr_lp"
+            "database": "eindr_lp",
+            "status": "connected"
         }
         
     except Exception as e:
         logger.error(f"Error getting stats: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="An error occurred while fetching statistics"
-        )
+        return {
+            "total_emails": "error",
+            "timestamp": datetime.utcnow(),
+            "storage_type": "PostgreSQL Database",
+            "database": "eindr_lp",
+            "status": "error",
+            "error": str(e)
+        }
 
 
 @app.get("/emails")
 async def list_emails(db: AsyncSession = Depends(get_database_session)):
     """List all stored emails (for demo purposes)"""
+    global database_available
+    
+    if not database_available:
+        raise HTTPException(
+            status_code=503,
+            detail="Database service is currently unavailable"
+        )
+    
     try:
         query = select(Email).order_by(Email.created_at.desc())
         result = await db.execute(query)

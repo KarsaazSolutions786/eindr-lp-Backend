@@ -34,7 +34,7 @@ This guide will walk you through deploying your Eindr Email Capture API to Railw
 
 Railway automatically provides:
 - `PORT` - The port your app should listen on
-- `DATABASE_URL` - PostgreSQL connection string
+- `DATABASE_URL` - PostgreSQL connection string (format: `postgres://user:pass@host:port/db`)
 
 **Manual Variables (if needed):**
 1. Go to your service settings
@@ -43,8 +43,8 @@ Railway automatically provides:
 
 **Example Variables:**
 ```
-DATABASE_URL=postgresql+psycopg://user:pass@host:port/db  # Auto-provided
-PORT=8000  # Auto-provided
+DATABASE_URL=postgres://user:pass@host:port/db  # Auto-provided by Railway
+PORT=8000  # Auto-provided by Railway
 CORS_ORIGINS=["https://your-frontend-domain.com"]  # Optional
 ```
 
@@ -56,7 +56,7 @@ Your project already includes:
 ```json
 {
   "deploy": {
-    "startCommand": "uvicorn app.main_postgresql:app --host 0.0.0.0 --port $PORT",
+    "startCommand": "python3 start.py",
     "healthcheckPath": "/health"
   }
 }
@@ -100,39 +100,57 @@ Railway automatically configures the PostgreSQL connection:
 - **User/Password**: Auto-generated
 - **SSL**: Enabled by default
 
-Your `app/database_psycopg.py` reads the `DATABASE_URL` environment variable:
+Your app automatically handles Railway's `DATABASE_URL`:
 ```python
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://...")
+# Railway provides: postgres://user:pass@host:port/db
+# App converts to: postgresql+psycopg://user:pass@host:port/db
 ```
 
 ### Application Settings
 
 - **Port**: Railway sets `$PORT` environment variable
 - **Host**: `0.0.0.0` (configured in your app)
-- **Health Check**: `/health` endpoint
+- **Health Check**: `/health` endpoint with database status
 - **Auto-restart**: Configured for failures
 
 ## 🚨 Troubleshooting
 
 ### Common Issues:
 
-1. **Build Failures**
+1. **Database Connection Errors**
+   ```
+   sqlalchemy.engine.base.py: Failed to connect to database
+   ```
+   
+   **Solutions:**
+   - ✅ Ensure PostgreSQL service is running in Railway
+   - ✅ Check that `DATABASE_URL` environment variable is set
+   - ✅ Verify Railway PostgreSQL service is healthy
+   - ✅ Check Railway logs for database initialization
+
+2. **PORT Environment Variable Issues**
+   ```
+   Error: Invalid value for '--port': '$PORT' is not a valid integer
+   ```
+   
+   **Solution:** ✅ **FIXED** - Now using `start.py` with proper PORT handling
+
+3. **Build Failures**
    - Check Railway build logs
    - Ensure `requirements.txt` has correct dependencies
    - Verify Dockerfile syntax
 
-2. **Database Connection Issues**
-   - Ensure PostgreSQL service is running
-   - Check if `DATABASE_URL` is set correctly
-   - Verify psycopg dependencies are installed
-
-3. **Port Issues**
-   - Railway sets `$PORT` automatically
-   - Ensure your app uses `$PORT` environment variable
-
 4. **Health Check Failures**
-   - Verify `/health` endpoint works locally
-   - Check if app starts correctly
+   - The app now includes database status in health checks
+   - `/health` endpoint returns "degraded" if database is unavailable
+   - App can start even if database connection fails initially
+
+### Railway-Specific Database Setup:
+
+1. **Check Database Service**: Ensure PostgreSQL service is running
+2. **Environment Variables**: Verify `DATABASE_URL` is automatically set
+3. **Connection Format**: Railway uses `postgres://` which app converts to `postgresql+psycopg://`
+4. **Database Logs**: Check Railway PostgreSQL service logs
 
 ### Debug Commands:
 
@@ -140,11 +158,14 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://...")
 # View service logs
 railway logs
 
-# View environment variables
+# View environment variables  
 railway variables
 
 # Connect to database
 railway connect postgres
+
+# Check database status
+curl https://your-app.railway.app/health
 ```
 
 ## 🔄 Redeployment
@@ -170,15 +191,36 @@ Railway provides:
 - **Usage analytics**
 - **Uptime monitoring**
 
+**Enhanced Health Monitoring:**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2023-12-01T12:00:00Z",
+  "database_status": "connected"
+}
+```
+
 ## 🎉 Success!
 
 Once deployed, your API will be available at:
 - **Railway URL**: `https://your-app-name-production.up.railway.app`
-- **Health Check**: `/health`
+- **Health Check**: `/health` (includes database status)
 - **API Documentation**: `/docs`
 - **Submit Email**: `POST /submit-email`
 
 Your PostgreSQL database will be persistent and managed by Railway with automatic backups.
+
+## 🛠️ Railway PostgreSQL Connection Details
+
+Railway automatically provides these environment variables:
+- `DATABASE_URL` - Full connection string
+- `POSTGRES_DB` - Database name  
+- `POSTGRES_HOST` - Database host
+- `POSTGRES_PASSWORD` - Database password
+- `POSTGRES_PORT` - Database port (5432)
+- `POSTGRES_USER` - Database username
+
+Your app uses `DATABASE_URL` directly and handles the format conversion automatically.
 
 ---
 
