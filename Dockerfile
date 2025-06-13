@@ -34,7 +34,7 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health', timeout=10)"
+    CMD python -c "import requests; import os; requests.get(f'http://localhost:{os.getenv(\"PORT\", 8000)}/health', timeout=10)"
 
-# Run the PostgreSQL version
-CMD ["uvicorn", "app.main_postgresql:app", "--host", "0.0.0.0", "--port", "8000"] 
+# Run the Python startup script
+CMD ["python3", "start.py"] 
