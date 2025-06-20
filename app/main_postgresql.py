@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -8,6 +9,7 @@ from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
 import os
+import secrets
 
 from app.database_psycopg import get_database_session, create_tables, close_database, Email
 from app.models import EmailSubmissionRequest, EmailSubmissionResponse, HealthCheckResponse
@@ -18,6 +20,26 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Initialize HTTP Basic Auth
+security = HTTPBasic()
+
+# Authentication credentials
+ADMIN_EMAIL = "admin@karsaaz.com"
+ADMIN_PASSWORD = "Admin123"
+
+def authenticate_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    """Authenticate admin user for protected endpoints"""
+    is_correct_email = secrets.compare_digest(credentials.username, ADMIN_EMAIL)
+    is_correct_password = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
+    
+    if not (is_correct_email and is_correct_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 # Track database status
 database_available = True
@@ -203,8 +225,11 @@ async def get_stats(db: AsyncSession = Depends(get_database_session)):
 
 
 @app.get("/emails")
-async def list_emails(db: AsyncSession = Depends(get_database_session)):
-    """List all stored emails (for demo purposes)"""
+async def list_emails(
+    db: AsyncSession = Depends(get_database_session),
+    current_user: str = Depends(authenticate_admin)
+):
+    """List all stored emails (protected endpoint - requires admin authentication)"""
     global database_available
     
     if not database_available:
@@ -214,6 +239,8 @@ async def list_emails(db: AsyncSession = Depends(get_database_session)):
         )
     
     try:
+        logger.info(f"👤 Admin user '{current_user}' accessing emails endpoint")
+        
         query = select(Email).order_by(Email.created_at.desc())
         result = await db.execute(query)
         emails = result.scalars().all()
@@ -229,7 +256,8 @@ async def list_emails(db: AsyncSession = Depends(get_database_session)):
         
         return {
             "emails": email_list,
-            "total": len(email_list)
+            "total": len(email_list),
+            "accessed_by": current_user
         }
         
     except Exception as e:
