@@ -185,8 +185,11 @@ async def submit_email(
 
 
 @app.get("/stats")
-async def get_stats(db: AsyncSession = Depends(get_database_session)):
-    """Get basic statistics about email submissions"""
+async def get_stats(
+    db: AsyncSession = Depends(get_database_session),
+    current_user: str = Depends(authenticate_admin)
+):
+    """Get basic statistics about email submissions (protected endpoint - requires admin authentication)"""
     global database_available
     
     if not database_available:
@@ -199,6 +202,8 @@ async def get_stats(db: AsyncSession = Depends(get_database_session)):
         }
     
     try:
+        logger.info(f"👤 Admin user '{current_user}' accessing stats endpoint")
+        
         query = select(Email)
         result = await db.execute(query)
         emails = result.scalars().all()
@@ -209,7 +214,8 @@ async def get_stats(db: AsyncSession = Depends(get_database_session)):
             "timestamp": datetime.utcnow(),
             "storage_type": "PostgreSQL Database",
             "database": "eindr_lp",
-            "status": "connected"
+            "status": "connected",
+            "accessed_by": current_user
         }
         
     except Exception as e:
