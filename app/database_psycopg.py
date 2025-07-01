@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy import Column, String, DateTime, UUID
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy import Column, String, DateTime, UUID, Integer, Text, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.sql import func
 import uuid
 import os
@@ -68,6 +68,63 @@ class Email(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ======== MULTI-LANGUAGE LABEL SYSTEM TABLES ========
+
+class Language(Base):
+    __tablename__ = "languages"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False, unique=True)  # e.g., "English", "Spanish"
+    lang_code = Column(String(10), nullable=False, unique=True)   # e.g., "en", "es"
+    direction = Column(String(10), nullable=False)  # e.g., "left", "right"
+    active = Column(Boolean, default=True, nullable=True)
+    icon = Column(String(100), nullable=True)
+    
+    # Relationships
+    language_labels = relationship("LanguageLabel", back_populates="language")
+
+
+class LabelGroup(Base):
+    __tablename__ = "label_groups"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    group_name = Column(String(100), nullable=False, unique=True)  # e.g., "home", "navigation"
+    
+    # Relationships
+    label_codes = relationship("LabelCode", back_populates="label_group")
+
+
+class LabelCode(Base):
+    __tablename__ = "label_codes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)  # e.g., "text_home", "btn_submit"
+    label_group_id = Column(Integer, ForeignKey("label_groups.id"), nullable=True)
+    
+    # Relationships
+    label_group = relationship("LabelGroup", back_populates="label_codes")
+    language_labels = relationship("LanguageLabel", back_populates="label_code")
+    
+    # Unique constraint: name must be unique within a label group
+    __table_args__ = (UniqueConstraint('name', 'label_group_id', name='unique_name_per_group'),)
+
+
+class LanguageLabel(Base):
+    __tablename__ = "language_label"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    language_id = Column(Integer, ForeignKey("languages.id"), nullable=False)
+    label_id = Column(Integer, ForeignKey("label_codes.id"), nullable=False)
+    label_text = Column(String(255), nullable=True)
+    
+    # Relationships
+    language = relationship("Language", back_populates="language_labels")
+    label_code = relationship("LabelCode", back_populates="language_labels")
+    
+    # Unique constraint: one label per language per label code
+    __table_args__ = (UniqueConstraint('language_id', 'label_id', name='unique_language_label'),)
 
 
 # Dependency to get database session
