@@ -17,19 +17,15 @@ def get_database_url():
     database_url = os.getenv("DATABASE_URL")
     
     if database_url:
-        # Railway typically provides postgres:// URLs, convert to postgresql+psycopg://
+        # Railway typically provides postgres:// URLs, convert to postgresql://
         if database_url.startswith("postgres://"):
-            database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
-        elif not database_url.startswith("postgresql+psycopg://"):
-            # Ensure we're using the psycopg driver
-            if database_url.startswith("postgresql://"):
-                database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
         
         logger.info(f"🐘 Using Railway PostgreSQL database")
         return database_url
     else:
         # Local development fallback
-        local_url = "postgresql+psycopg://postgres:admin123@localhost/eindr_lp"
+        local_url = "postgresql://postgres:admin123@localhost/eindr_lp"
         logger.info(f"🔧 Using local PostgreSQL database for development")
         return local_url
 
