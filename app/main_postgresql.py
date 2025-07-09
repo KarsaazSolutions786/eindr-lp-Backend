@@ -22,11 +22,11 @@ from app.models import (
     LabelCodeCreate, LabelCodeUpdate, LabelCode,
     LanguageLabelCreate, LanguageLabelUpdate, LanguageLabel,
     LabelValidationRequest, LabelValidationResponse,
-    LanguageLabelWithDetails, LabelsForLanguageResponse
+    LanguageLabelWithDetails, LabelsForLanguageResponse, BulkLabelRequest, BulkLabelResponse
 )
 from app.services import (
     EmailService,
-    LanguageService, LabelGroupService, LabelCodeService, LanguageLabelService
+    LanguageService, LabelGroupService, LabelCodeService, LanguageLabelService, BulkLabelService
 )
 
 # Configure logging
@@ -623,6 +623,54 @@ async def get_language_labels_with_details(
 
 
 # === COMBINED ENDPOINT FOR STEP-BY-STEP LABEL INSERTION ===
+
+@app.post("/api/labels/bulk-insert", response_model=BulkLabelResponse)
+async def bulk_insert_labels(
+    bulk_request: BulkLabelRequest,
+    db: AsyncSession = Depends(get_database_session),
+    current_user: str = Depends(authenticate_admin)
+):
+    """
+    Insert multiple labels in bulk for a specific language and label group
+    
+    This endpoint allows you to:
+    1. Select a language and label group
+    2. Provide multiple label code names and their translations
+    3. Automatically create label codes if they don't exist
+    4. Insert all translations in a single operation
+    
+    Example usage:
+    {
+        "language_id": 1,
+        "label_group_id": 1,
+        "labels": [
+            {
+                "label_code_name": "text_welcome",
+                "label_text": "Welcome to our website!"
+            },
+            {
+                "label_code_name": "btn_get_started", 
+                "label_text": "Get Started"
+            }
+        ]
+    }
+    """
+    try:
+        logger.info(f"👤 Admin '{current_user}' performing bulk label insertion: {len(bulk_request.labels)} labels")
+        
+        result = await BulkLabelService.bulk_insert_labels(bulk_request, db)
+        
+        if result.success:
+            logger.info(f"✅ Bulk insertion successful: {result.successful_insertions} labels inserted")
+        else:
+            logger.warning(f"⚠️  Bulk insertion partially failed: {result.successful_insertions} successful, {result.failed_insertions} failed")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in bulk label insertion: {e}")
+        raise HTTPException(status_code=500, detail="Failed to perform bulk label insertion")
+
 
 @app.post("/api/labels/insert-with-validation")
 async def insert_label_with_validation(

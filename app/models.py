@@ -198,7 +198,7 @@ class LabelValidationRequest(BaseModel):
 
 class LabelValidationResponse(BaseModel):
     """Model for label validation response"""
-    valid: bool = Field(..., description="Whether the validation passed")
+    valid: bool = Field(..., description="Whether the data is valid for insertion")
     language_exists: bool = Field(..., description="Whether the language exists")
     label_group_exists: bool = Field(..., description="Whether the label group exists")
     label_code_exists: bool = Field(..., description="Whether the label code exists and belongs to group")
@@ -225,10 +225,90 @@ class LabelsForLanguageResponse(BaseModel):
                         "btn_get_started": "Get Started"
                     },
                     "navigation": {
-                        "menu_about": "About",
-                        "menu_contact": "Contact"
+                        "menu_home": "Home",
+                        "menu_about": "About"
                     }
                 },
                 "total_labels": 4
+            }
+        }
+
+
+# ======== BULK OPERATIONS MODELS ========
+
+class BulkLabelItem(BaseModel):
+    """Model for a single label in bulk operations"""
+    label_code_name: str = Field(..., description="Name of the label code (e.g., 'text_welcome')")
+    label_text: str = Field(..., description="Translated text for this label")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "label_code_name": "text_welcome",
+                "label_text": "Welcome to our website!"
+            }
+        }
+
+
+class BulkLabelRequest(BaseModel):
+    """Model for bulk label insertion request"""
+    language_id: int = Field(..., description="ID of the language")
+    label_group_id: int = Field(..., description="ID of the label group")
+    labels: List[BulkLabelItem] = Field(..., description="List of labels to insert", min_items=1, max_items=100)
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "language_id": 1,
+                "label_group_id": 1,
+                "labels": [
+                    {
+                        "label_code_name": "text_welcome",
+                        "label_text": "Welcome to our website!"
+                    },
+                    {
+                        "label_code_name": "btn_get_started",
+                        "label_text": "Get Started"
+                    }
+                ]
+            }
+        }
+
+
+class BulkLabelResult(BaseModel):
+    """Model for a single label result in bulk operations"""
+    label_code_name: str
+    label_text: str
+    success: bool
+    message: str
+    label_id: Optional[int] = None
+
+
+class BulkLabelResponse(BaseModel):
+    """Model for bulk label insertion response"""
+    success: bool = Field(..., description="Overall success status")
+    total_labels: int = Field(..., description="Total number of labels processed")
+    successful_insertions: int = Field(..., description="Number of successfully inserted labels")
+    failed_insertions: int = Field(..., description="Number of failed insertions")
+    results: List[BulkLabelResult] = Field(..., description="Detailed results for each label")
+    message: str = Field(..., description="Overall message")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "total_labels": 2,
+                "successful_insertions": 2,
+                "failed_insertions": 0,
+                "results": [
+                    {
+                        "label_code_name": "text_welcome",
+                        "label_text": "Welcome to our website!",
+                        "success": True,
+                        "message": "Successfully inserted",
+                        "label_id": 1
+                    }
+                ],
+                "message": "Successfully inserted 2 out of 2 labels"
             }
         } 

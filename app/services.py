@@ -10,7 +10,8 @@ from app.models import (
     LabelCodeCreate, LabelCodeUpdate, LabelCode as LabelCodeModel,
     LanguageLabelCreate, LanguageLabelUpdate, LanguageLabel as LanguageLabelModel,
     LabelValidationRequest, LabelValidationResponse,
-    LanguageLabelWithDetails, LabelsForLanguageResponse
+    LanguageLabelWithDetails, LabelsForLanguageResponse,
+    BulkLabelRequest, BulkLabelResponse, BulkLabelResult, BulkLabelItem
 )
 import logging
 from typing import List, Optional, Dict, Any
@@ -205,6 +206,45 @@ class LabelGroupService:
         result = await db.execute(query)
         groups = result.scalars().all()
         return [LabelGroupModel.from_orm(group) for group in groups]
+    
+    @staticmethod
+    async def update_label_group(group_id: int, group_data: LabelGroupUpdate, db: AsyncSession) -> Optional[LabelGroupModel]:
+        """Update a label group"""
+        query = select(LabelGroup).where(LabelGroup.id == group_id)
+        result = await db.execute(query)
+        group = result.scalar_one_or_none()
+        
+        if not group:
+            return None
+        
+        update_data = group_data.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(group, field, value)
+        
+        try:
+            await db.commit()
+            await db.refresh(group)
+            logger.info(f"✅ Updated label group: {group.group_name}")
+            return LabelGroupModel.from_orm(group)
+        except IntegrityError as e:
+            await db.rollback()
+            logger.error(f"❌ Label group update failed: {e}")
+            raise ValueError("Label group name already exists")
+    
+    @staticmethod
+    async def delete_label_group(group_id: int, db: AsyncSession) -> bool:
+        """Delete a label group"""
+        query = select(LabelGroup).where(LabelGroup.id == group_id)
+        result = await db.execute(query)
+        group = result.scalar_one_or_none()
+        
+        if not group:
+            return False
+        
+        await db.delete(group)
+        await db.commit()
+        logger.info(f"✅ Deleted label group: {group.group_name}")
+        return True
 
 
 class LabelCodeService:
@@ -223,7 +263,7 @@ class LabelCodeService:
         except IntegrityError as e:
             await db.rollback()
             logger.error(f"❌ Label code creation failed: {e}")
-            raise ValueError(f"Label code '{code_data.name}' already exists in this group")
+            raise ValueError(f"Label code with name '{code_data.name}' already exists in this group")
     
     @staticmethod
     async def get_label_code(code_id: int, db: AsyncSession) -> Optional[LabelCodeModel]:
@@ -240,96 +280,117 @@ class LabelCodeService:
         result = await db.execute(query)
         codes = result.scalars().all()
         return [LabelCodeModel.from_orm(code) for code in codes]
+    
+    @staticmethod
+    async def get_label_code_by_name_and_group(name: str, group_id: int, db: AsyncSession) -> Optional[LabelCode]:
+        """Get label code by name and group ID"""
+        query = select(LabelCode).where(
+            and_(LabelCode.name == name, LabelCode.label_group_id == group_id)
+        )
+        result = await db.execute(query)
+        return result.scalar_one_or_none()
 
 
 class LanguageLabelService:
-    """Service for managing language labels (translations)"""
+    """Service for managing language labels"""
     
     @staticmethod
     async def validate_label_data(validation_request: LabelValidationRequest, db: AsyncSession) -> LabelValidationResponse:
-        """Validate language, label group, and label code existence before insertion"""
-        
-        # Check if language exists
-        language_query = select(Language).where(Language.id == validation_request.language_id)
-        language_result = await db.execute(language_query)
-        language_exists = language_result.scalar_one_or_none() is not None
-        
-        # Check if label group exists
-        group_query = select(LabelGroup).where(LabelGroup.id == validation_request.label_group_id)
-        group_result = await db.execute(group_query)
-        label_group_exists = group_result.scalar_one_or_none() is not None
-        
-        # Check if label code exists and belongs to the specified group
-        code_query = select(LabelCode).where(
-            and_(
-                LabelCode.id == validation_request.label_code_id,
-                LabelCode.label_group_id == validation_request.label_group_id
+        """Validate language, label group, and label code existence"""
+        try:
+            # Check if language exists
+            language_query = select(Language).where(Language.id == validation_request.language_id)
+            language_result = await db.execute(language_query)
+            language_exists = language_result.scalar_one_or_none() is not None
+            
+            # Check if label group exists
+            group_query = select(LabelGroup).where(LabelGroup.id == validation_request.label_group_id)
+            group_result = await db.execute(group_query)
+            group_exists = group_result.scalar_one_or_none() is not None
+            
+            # Check if label code exists and belongs to the group
+            code_query = select(LabelCode).where(
+                and_(
+                    LabelCode.id == validation_request.label_code_id,
+                    LabelCode.label_group_id == validation_request.label_group_id
+                )
             )
-        )
-        code_result = await db.execute(code_query)
-        label_code_exists = code_result.scalar_one_or_none() is not None
-        
-        valid = language_exists and label_group_exists and label_code_exists
-        
-        if valid:
-            message = "✅ All validation checks passed. Ready to insert label."
-        else:
-            errors = []
+            code_result = await db.execute(code_query)
+            code_exists = code_result.scalar_one_or_none() is not None
+            
+            # Check if translation already exists
+            existing_translation_query = select(LanguageLabel).where(
+                and_(
+                    LanguageLabel.language_id == validation_request.language_id,
+                    LanguageLabel.label_id == validation_request.label_code_id
+                )
+            )
+            existing_result = await db.execute(existing_translation_query)
+            translation_exists = existing_result.scalar_one_or_none() is not None
+            
+            # Determine if data is valid
+            valid = language_exists and group_exists and code_exists and not translation_exists
+            
+            # Generate appropriate message
             if not language_exists:
-                errors.append("Language not found")
-            if not label_group_exists:
-                errors.append("Label group not found")
-            if not label_code_exists:
-                errors.append("Label code not found or doesn't belong to the specified group")
-            message = f"❌ Validation failed: {', '.join(errors)}"
-        
-        return LabelValidationResponse(
-            valid=valid,
-            language_exists=language_exists,
-            label_group_exists=label_group_exists,
-            label_code_exists=label_code_exists,
-            message=message
-        )
+                message = f"Language with ID {validation_request.language_id} does not exist"
+            elif not group_exists:
+                message = f"Label group with ID {validation_request.label_group_id} does not exist"
+            elif not code_exists:
+                message = f"Label code with ID {validation_request.label_code_id} does not exist or does not belong to the specified group"
+            elif translation_exists:
+                message = f"Translation for language {validation_request.language_id} and label code {validation_request.label_code_id} already exists"
+            else:
+                message = "✅ All validation checks passed - ready for insertion"
+            
+            return LabelValidationResponse(
+                valid=valid,
+                language_exists=language_exists,
+                label_group_exists=group_exists,
+                label_code_exists=code_exists,
+                message=message
+            )
+            
+        except Exception as e:
+            logger.error(f"Error validating label data: {e}")
+            return LabelValidationResponse(
+                valid=False,
+                language_exists=False,
+                label_group_exists=False,
+                label_code_exists=False,
+                message=f"Validation error: {str(e)}"
+            )
     
     @staticmethod
     async def create_language_label(label_data: LanguageLabelCreate, db: AsyncSession) -> LanguageLabelModel:
-        """Create a new language label (translation)"""
+        """Create a new language label"""
         try:
-            # First validate the data
-            validation_request = LabelValidationRequest(
-                language_id=label_data.language_id,
-                label_group_id=0,  # We'll get this from the label code
-                label_code_id=label_data.label_id,
-                label_text=label_data.label_text
+            # Check if translation already exists
+            existing_query = select(LanguageLabel).where(
+                and_(
+                    LanguageLabel.language_id == label_data.language_id,
+                    LanguageLabel.label_id == label_data.label_id
+                )
             )
+            existing_result = await db.execute(existing_query)
+            existing = existing_result.scalar_one_or_none()
             
-            # Get the label code to find its group
-            code_query = select(LabelCode).where(LabelCode.id == label_data.label_id)
-            code_result = await db.execute(code_query)
-            label_code = code_result.scalar_one_or_none()
+            if existing:
+                raise ValueError(f"Translation for language {label_data.language_id} and label {label_data.label_id} already exists")
             
-            if not label_code:
-                raise ValueError("Label code not found")
-            
-            validation_request.label_group_id = label_code.label_group_id
-            validation_result = await LanguageLabelService.validate_label_data(validation_request, db)
-            
-            if not validation_result.valid:
-                raise ValueError(validation_result.message)
-            
-            # Create the language label
+            # Create new translation
             language_label = LanguageLabel(**label_data.dict())
             db.add(language_label)
             await db.commit()
             await db.refresh(language_label)
             
-            logger.info(f"✅ Created language label: Language {label_data.language_id}, Label {label_data.label_id}")
+            logger.info(f"✅ Created new language label: language_id={label_data.language_id}, label_id={label_data.label_id}")
             return LanguageLabelModel.from_orm(language_label)
             
         except IntegrityError as e:
             await db.rollback()
             logger.error(f"❌ Language label creation failed: {e}")
-            raise ValueError("Language label already exists for this language and label code")
+            raise ValueError("Translation already exists or invalid data")
     
     @staticmethod
     async def get_language_label(language_id: int, label_id: int, db: AsyncSession) -> Optional[LanguageLabelModel]:
@@ -346,47 +407,50 @@ class LanguageLabelService:
     
     @staticmethod
     async def get_labels_for_language(language_id: int, db: AsyncSession) -> LabelsForLanguageResponse:
-        """Get all labels for a specific language, grouped by label groups"""
-        
-        # Get language info
-        language_query = select(Language).where(Language.id == language_id)
-        language_result = await db.execute(language_query)
-        language = language_result.scalar_one_or_none()
-        
-        if not language:
-            raise ValueError("Language not found")
-        
-        # Get all language labels with related data
-        query = select(LanguageLabel, LabelCode, LabelGroup).join(
-            LabelCode, LanguageLabel.label_id == LabelCode.id
-        ).join(
-            LabelGroup, LabelCode.label_group_id == LabelGroup.id
-        ).where(LanguageLabel.language_id == language_id).order_by(
-            LabelGroup.group_name, LabelCode.name
-        )
-        
-        result = await db.execute(query)
-        rows = result.all()
-        
-        # Group labels by label group
-        labels_by_group = {}
-        total_labels = 0
-        
-        for language_label, label_code, label_group in rows:
-            group_name = label_group.group_name
-            if group_name not in labels_by_group:
-                labels_by_group[group_name] = {}
+        """Get all labels for a specific language, organized by label groups"""
+        try:
+            # Get language info
+            language_query = select(Language).where(Language.id == language_id)
+            language_result = await db.execute(language_query)
+            language = language_result.scalar_one_or_none()
             
-            labels_by_group[group_name][label_code.name] = language_label.label_text
-            total_labels += 1
-        
-        return LabelsForLanguageResponse(
-            language_id=language.id,
-            language_name=language.name,
-            language_code=language.lang_code,
-            labels=labels_by_group,
-            total_labels=total_labels
-        )
+            if not language:
+                raise ValueError(f"Language with ID {language_id} not found")
+            
+            # Get all labels for this language with related data
+            query = select(LanguageLabel, LabelCode, LabelGroup).join(
+                LabelCode, LanguageLabel.label_id == LabelCode.id
+            ).join(
+                LabelGroup, LabelCode.label_group_id == LabelGroup.id
+            ).where(LanguageLabel.language_id == language_id)
+            
+            result = await db.execute(query)
+            rows = result.all()
+            
+            # Organize labels by group
+            labels_by_group = {}
+            total_labels = 0
+            
+            for row in rows:
+                language_label, label_code, label_group = row
+                
+                if label_group.group_name not in labels_by_group:
+                    labels_by_group[label_group.group_name] = {}
+                
+                labels_by_group[label_group.group_name][label_code.name] = language_label.label_text
+                total_labels += 1
+            
+            return LabelsForLanguageResponse(
+                language_id=language_id,
+                language_name=language.name,
+                language_code=language.lang_code,
+                labels=labels_by_group,
+                total_labels=total_labels
+            )
+            
+        except Exception as e:
+            logger.error(f"Error fetching labels for language {language_id}: {e}")
+            raise
     
     @staticmethod
     async def update_language_label(
@@ -412,10 +476,15 @@ class LanguageLabelService:
         for field, value in update_data.items():
             setattr(language_label, field, value)
         
-        await db.commit()
-        await db.refresh(language_label)
-        logger.info(f"✅ Updated language label: Language {language_id}, Label {label_id}")
-        return LanguageLabelModel.from_orm(language_label)
+        try:
+            await db.commit()
+            await db.refresh(language_label)
+            logger.info(f"✅ Updated language label: language_id={language_id}, label_id={label_id}")
+            return LanguageLabelModel.from_orm(language_label)
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"❌ Language label update failed: {e}")
+            raise ValueError("Failed to update language label")
     
     @staticmethod
     async def delete_language_label(language_id: int, label_id: int, db: AsyncSession) -> bool:
@@ -434,17 +503,14 @@ class LanguageLabelService:
         
         await db.delete(language_label)
         await db.commit()
-        logger.info(f"✅ Deleted language label: Language {language_id}, Label {label_id}")
+        logger.info(f"✅ Deleted language label: language_id={language_id}, label_id={label_id}")
         return True
     
     @staticmethod
     async def get_language_labels_with_details(db: AsyncSession, language_id: Optional[int] = None) -> List[LanguageLabelWithDetails]:
         """Get language labels with detailed information"""
         query = select(
-            LanguageLabel,
-            Language,
-            LabelCode,
-            LabelGroup
+            LanguageLabel, Language, LabelCode, LabelGroup
         ).join(
             Language, LanguageLabel.language_id == Language.id
         ).join(
@@ -461,17 +527,158 @@ class LanguageLabelService:
         result = await db.execute(query)
         rows = result.all()
         
-        details = []
-        for language_label, language, label_code, label_group in rows:
-            details.append(LanguageLabelWithDetails(
-                id=language_label.id,
-                language_id=language.id,
-                language_name=language.name,
-                language_code=language.lang_code,
-                label_id=label_code.id,
-                label_code=label_code.name,
-                label_group_name=label_group.group_name,
-                label_text=language_label.label_text
-            ))
+        return [
+            LanguageLabelWithDetails(
+                id=row[0].id,
+                language_id=row[0].language_id,
+                language_name=row[1].name,
+                language_code=row[1].lang_code,
+                label_id=row[0].label_id,
+                label_code=row[2].name,
+                label_group_name=row[3].group_name,
+                label_text=row[0].label_text
+            )
+            for row in rows
+        ]
+
+
+# ======== BULK OPERATIONS SERVICE ========
+
+class BulkLabelService:
+    """Service for bulk label operations"""
+    
+    @staticmethod
+    async def bulk_insert_labels(bulk_request: BulkLabelRequest, db: AsyncSession) -> BulkLabelResponse:
+        """
+        Insert multiple labels in bulk for a specific language and label group
         
-        return details 
+        Args:
+            bulk_request: Bulk label insertion request
+            db: Database session
+            
+        Returns:
+            BulkLabelResponse with detailed results
+        """
+        logger.info(f"🚀 Starting bulk label insertion: {len(bulk_request.labels)} labels for language {bulk_request.language_id}, group {bulk_request.label_group_id}")
+        
+        results = []
+        successful_insertions = 0
+        failed_insertions = 0
+        
+        # Validate language and group existence first
+        language_query = select(Language).where(Language.id == bulk_request.language_id)
+        language_result = await db.execute(language_query)
+        language = language_result.scalar_one_or_none()
+        
+        if not language:
+            return BulkLabelResponse(
+                success=False,
+                total_labels=len(bulk_request.labels),
+                successful_insertions=0,
+                failed_insertions=len(bulk_request.labels),
+                results=[],
+                message=f"Language with ID {bulk_request.language_id} does not exist"
+            )
+        
+        group_query = select(LabelGroup).where(LabelGroup.id == bulk_request.label_group_id)
+        group_result = await db.execute(group_query)
+        group = group_result.scalar_one_or_none()
+        
+        if not group:
+            return BulkLabelResponse(
+                success=False,
+                total_labels=len(bulk_request.labels),
+                successful_insertions=0,
+                failed_insertions=len(bulk_request.labels),
+                results=[],
+                message=f"Label group with ID {bulk_request.label_group_id} does not exist"
+            )
+        
+        # Process each label
+        for label_item in bulk_request.labels:
+            try:
+                # Get or create label code
+                label_code = await LabelCodeService.get_label_code_by_name_and_group(
+                    label_item.label_code_name, 
+                    bulk_request.label_group_id, 
+                    db
+                )
+                
+                if not label_code:
+                    # Create the label code if it doesn't exist
+                    label_code_data = LabelCodeCreate(
+                        name=label_item.label_code_name,
+                        label_group_id=bulk_request.label_group_id
+                    )
+                    label_code = await LabelCodeService.create_label_code(label_code_data, db)
+                    logger.info(f"✅ Created new label code: {label_item.label_code_name}")
+                
+                # Check if translation already exists
+                existing_translation = await LanguageLabelService.get_language_label(
+                    bulk_request.language_id, 
+                    label_code.id, 
+                    db
+                )
+                
+                if existing_translation:
+                    results.append(BulkLabelResult(
+                        label_code_name=label_item.label_code_name,
+                        label_text=label_item.label_text,
+                        success=False,
+                        message=f"Translation already exists for label code '{label_item.label_code_name}'",
+                        label_id=existing_translation.id
+                    ))
+                    failed_insertions += 1
+                    continue
+                
+                # Create the translation
+                label_data = LanguageLabelCreate(
+                    language_id=bulk_request.language_id,
+                    label_id=label_code.id,
+                    label_text=label_item.label_text
+                )
+                
+                created_label = await LanguageLabelService.create_language_label(label_data, db)
+                
+                results.append(BulkLabelResult(
+                    label_code_name=label_item.label_code_name,
+                    label_text=label_item.label_text,
+                    success=True,
+                    message="Successfully inserted",
+                    label_id=created_label.id
+                ))
+                successful_insertions += 1
+                
+                logger.info(f"✅ Successfully inserted label: {label_item.label_code_name}")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to insert label {label_item.label_code_name}: {e}")
+                results.append(BulkLabelResult(
+                    label_code_name=label_item.label_code_name,
+                    label_text=label_item.label_text,
+                    success=False,
+                    message=f"Error: {str(e)}"
+                ))
+                failed_insertions += 1
+        
+        # Determine overall success
+        overall_success = failed_insertions == 0
+        
+        # Generate message
+        if overall_success:
+            message = f"✅ Successfully inserted all {successful_insertions} labels"
+        elif successful_insertions > 0:
+            message = f"⚠️  Partially successful: {successful_insertions} inserted, {failed_insertions} failed"
+        else:
+            message = f"❌ Failed to insert any labels: {failed_insertions} errors"
+        
+        logger.info(f"🏁 Bulk insertion completed: {successful_insertions} successful, {failed_insertions} failed")
+        
+        return BulkLabelResponse(
+            success=overall_success,
+            total_labels=len(bulk_request.labels),
+            successful_insertions=successful_insertions,
+            failed_insertions=failed_insertions,
+            results=results,
+            message=message
+        ) 
