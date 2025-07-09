@@ -553,17 +553,19 @@ class BulkLabelService:
         Insert multiple labels in bulk for a specific language and label group
         
         Args:
-            bulk_request: Bulk label insertion request
+            bulk_request: Bulk label insertion request with optional update support
             db: Database session
             
         Returns:
-            BulkLabelResponse with detailed results
+            BulkLabelResponse with detailed results including insertions, updates, and skips
         """
-        logger.info(f"🚀 Starting bulk label insertion: {len(bulk_request.labels)} labels for language {bulk_request.language_id}, group {bulk_request.label_group_id}")
+        logger.info(f"🚀 Starting bulk label operation: {len(bulk_request.labels)} labels for language {bulk_request.language_id}, group {bulk_request.label_group_id}, allow_updates={bulk_request.allow_updates}")
         
         results = []
         successful_insertions = 0
+        successful_updates = 0
         failed_insertions = 0
+        skipped_labels = 0
         
         # Validate language and group existence first
         language_query = select(Language).where(Language.id == bulk_request.language_id)
@@ -575,7 +577,9 @@ class BulkLabelService:
                 success=False,
                 total_labels=len(bulk_request.labels),
                 successful_insertions=0,
+                successful_updates=0,
                 failed_insertions=len(bulk_request.labels),
+                skipped_labels=0,
                 results=[],
                 message=f"Language with ID {bulk_request.language_id} does not exist"
             )
@@ -589,7 +593,9 @@ class BulkLabelService:
                 success=False,
                 total_labels=len(bulk_request.labels),
                 successful_insertions=0,
+                successful_updates=0,
                 failed_insertions=len(bulk_request.labels),
+                skipped_labels=0,
                 results=[],
                 message=f"Label group with ID {bulk_request.label_group_id} does not exist"
             )
@@ -613,25 +619,75 @@ class BulkLabelService:
                     label_code = await LabelCodeService.create_label_code(label_code_data, db)
                     logger.info(f"✅ Created new label code: {label_item.label_code_name}")
                 
-                # Check if translation already exists
-                existing_translation = await LanguageLabelService.get_language_label(
-                    bulk_request.language_id, 
-                    label_code.id, 
-                    db
+                # Check if translation already exists (fetch ORM object directly)
+                existing_query = select(LanguageLabel).where(
+                    and_(
+                        LanguageLabel.language_id == bulk_request.language_id,
+                        LanguageLabel.label_id == label_code.id
+                    )
                 )
-                
-                if existing_translation:
-                    results.append(BulkLabelResult(
-                        label_code_name=label_item.label_code_name,
-                        label_text=label_item.label_text,
-                        success=False,
-                        message=f"Translation already exists for label code '{label_item.label_code_name}'",
-                        label_id=existing_translation.id
-                    ))
-                    failed_insertions += 1
+                existing_result = await db.execute(existing_query)
+                existing_label_obj = existing_result.scalar_one_or_none()
+
+                if existing_label_obj:
+                    if bulk_request.allow_updates:
+                        # Compare the actual DB value
+                        if existing_label_obj.label_text == label_item.label_text:
+                            # No change, skip
+                            results.append(BulkLabelResult(
+                                label_code_name=label_item.label_code_name,
+                                label_text=label_item.label_text,
+                                success=False,
+                                message=f"Translation already exists with same text for label code '{label_item.label_code_name}'",
+                                label_id=existing_label_obj.id,
+                                action="skipped"
+                            ))
+                            skipped_labels += 1
+                            logger.info(f"⏭️  Skipped unchanged label: {label_item.label_code_name}")
+                        else:
+                            # Text has changed, update it
+                            try:
+                                old_text = existing_label_obj.label_text
+                                existing_label_obj.label_text = label_item.label_text
+                                await db.commit()
+                                await db.refresh(existing_label_obj)
+                                results.append(BulkLabelResult(
+                                    label_code_name=label_item.label_code_name,
+                                    label_text=label_item.label_text,
+                                    success=True,
+                                    message=f"Successfully updated existing translation (changed from '{old_text}' to '{label_item.label_text}')",
+                                    label_id=existing_label_obj.id,
+                                    action="updated"
+                                ))
+                                successful_updates += 1
+                                logger.info(f"✅ Successfully updated label: {label_item.label_code_name}")
+                            except Exception as update_error:
+                                await db.rollback()
+                                logger.error(f"❌ Failed to update label {label_item.label_code_name}: {update_error}")
+                                results.append(BulkLabelResult(
+                                    label_code_name=label_item.label_code_name,
+                                    label_text=label_item.label_text,
+                                    success=False,
+                                    message=f"Update error: {str(update_error)}",
+                                    label_id=existing_label_obj.id,
+                                    action="failed_update"
+                                ))
+                                failed_insertions += 1
+                    else:
+                        # Skip existing translation (no updates allowed)
+                        results.append(BulkLabelResult(
+                            label_code_name=label_item.label_code_name,
+                            label_text=label_item.label_text,
+                            success=False,
+                            message=f"Translation already exists for label code '{label_item.label_code_name}' (use allow_updates=true to update)",
+                            label_id=existing_label_obj.id,
+                            action="skipped"
+                        ))
+                        skipped_labels += 1
+                        logger.info(f"⏭️  Skipped existing label: {label_item.label_code_name}")
                     continue
                 
-                # Create the translation
+                # Create new translation
                 label_data = LanguageLabelCreate(
                     language_id=bulk_request.language_id,
                     label_id=label_code.id,
@@ -644,41 +700,60 @@ class BulkLabelService:
                     label_code_name=label_item.label_code_name,
                     label_text=label_item.label_text,
                     success=True,
-                    message="Successfully inserted",
-                    label_id=created_label.id
+                    message="Successfully inserted new translation",
+                    label_id=created_label.id,
+                    action="inserted"
                 ))
                 successful_insertions += 1
                 
                 logger.info(f"✅ Successfully inserted label: {label_item.label_code_name}")
                 
             except Exception as e:
-                logger.error(f"❌ Failed to insert label {label_item.label_code_name}: {e}")
+                logger.error(f"❌ Failed to process label {label_item.label_code_name}: {e}")
                 results.append(BulkLabelResult(
                     label_code_name=label_item.label_code_name,
                     label_text=label_item.label_text,
                     success=False,
-                    message=f"Error: {str(e)}"
+                    message=f"Error: {str(e)}",
+                    action="failed"
                 ))
                 failed_insertions += 1
         
         # Determine overall success
+        total_successful = successful_insertions + successful_updates
         overall_success = failed_insertions == 0
         
         # Generate message
-        if overall_success:
-            message = f"✅ Successfully inserted all {successful_insertions} labels"
-        elif successful_insertions > 0:
-            message = f"⚠️  Partially successful: {successful_insertions} inserted, {failed_insertions} failed"
+        if overall_success and total_successful == len(bulk_request.labels):
+            message = f"✅ Successfully processed all {len(bulk_request.labels)} labels"
+        elif total_successful > 0:
+            message = f"⚠️  Partially successful: {successful_insertions} inserted, {successful_updates} updated, {skipped_labels} skipped, {failed_insertions} failed"
         else:
-            message = f"❌ Failed to insert any labels: {failed_insertions} errors"
+            message = f"❌ Failed to process any labels: {failed_insertions} errors"
         
-        logger.info(f"🏁 Bulk insertion completed: {successful_insertions} successful, {failed_insertions} failed")
+        # Add detailed breakdown
+        details = []
+        if successful_insertions > 0:
+            details.append(f"{successful_insertions} new")
+        if successful_updates > 0:
+            details.append(f"{successful_updates} updated")
+        if skipped_labels > 0:
+            details.append(f"{skipped_labels} already exist")
+        if failed_insertions > 0:
+            details.append(f"{failed_insertions} failed")
+        
+        if details:
+            message += f" ({', '.join(details)})"
+        
+        logger.info(f"🏁 Bulk operation completed: {successful_insertions} inserted, {successful_updates} updated, {skipped_labels} skipped, {failed_insertions} failed")
         
         return BulkLabelResponse(
             success=overall_success,
             total_labels=len(bulk_request.labels),
             successful_insertions=successful_insertions,
+            successful_updates=successful_updates,
             failed_insertions=failed_insertions,
+            skipped_labels=skipped_labels,
             results=results,
             message=message
         ) 

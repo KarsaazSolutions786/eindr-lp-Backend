@@ -631,18 +631,25 @@ async def bulk_insert_labels(
     current_user: str = Depends(authenticate_admin)
 ):
     """
-    Insert multiple labels in bulk for a specific language and label group
+    Insert or update multiple labels in bulk for a specific language and label group
     
     This endpoint allows you to:
     1. Select a language and label group
     2. Provide multiple label code names and their translations
     3. Automatically create label codes if they don't exist
-    4. Insert all translations in a single operation
+    4. Insert new translations or update existing ones based on allow_updates flag
+    
+    Features:
+    - Insert new translations for non-existing labels
+    - Update existing translations when allow_updates=true
+    - Skip existing translations when allow_updates=false (default)
+    - Detailed results showing what action was performed for each label
     
     Example usage:
     {
         "language_id": 1,
         "label_group_id": 1,
+        "allow_updates": true,
         "labels": [
             {
                 "label_code_name": "text_welcome",
@@ -654,6 +661,13 @@ async def bulk_insert_labels(
             }
         ]
     }
+    
+    Response includes:
+    - successful_insertions: Number of new labels inserted
+    - successful_updates: Number of existing labels updated
+    - skipped_labels: Number of existing labels skipped (when allow_updates=false)
+    - failed_insertions: Number of failed operations
+    - results: Detailed results for each label with action performed
     """
     try:
         logger.info(f"👤 Admin '{current_user}' performing bulk label insertion: {len(bulk_request.labels)} labels")

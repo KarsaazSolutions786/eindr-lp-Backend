@@ -255,12 +255,14 @@ class BulkLabelRequest(BaseModel):
     language_id: int = Field(..., description="ID of the language")
     label_group_id: int = Field(..., description="ID of the label group")
     labels: List[BulkLabelItem] = Field(..., description="List of labels to insert", min_items=1, max_items=100)
+    allow_updates: bool = Field(default=False, description="Whether to update existing labels instead of failing")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "language_id": 1,
                 "label_group_id": 1,
+                "allow_updates": False,
                 "labels": [
                     {
                         "label_code_name": "text_welcome",
@@ -282,6 +284,7 @@ class BulkLabelResult(BaseModel):
     success: bool
     message: str
     label_id: Optional[int] = None
+    action: Optional[str] = Field(None, description="Action performed: 'inserted', 'updated', or 'skipped'")
 
 
 class BulkLabelResponse(BaseModel):
@@ -289,7 +292,9 @@ class BulkLabelResponse(BaseModel):
     success: bool = Field(..., description="Overall success status")
     total_labels: int = Field(..., description="Total number of labels processed")
     successful_insertions: int = Field(..., description="Number of successfully inserted labels")
+    successful_updates: int = Field(..., description="Number of successfully updated labels")
     failed_insertions: int = Field(..., description="Number of failed insertions")
+    skipped_labels: int = Field(..., description="Number of skipped labels (existing without update)")
     results: List[BulkLabelResult] = Field(..., description="Detailed results for each label")
     message: str = Field(..., description="Overall message")
     
@@ -298,17 +303,20 @@ class BulkLabelResponse(BaseModel):
             "example": {
                 "success": True,
                 "total_labels": 2,
-                "successful_insertions": 2,
+                "successful_insertions": 1,
+                "successful_updates": 1,
                 "failed_insertions": 0,
+                "skipped_labels": 0,
                 "results": [
                     {
                         "label_code_name": "text_welcome",
                         "label_text": "Welcome to our website!",
                         "success": True,
                         "message": "Successfully inserted",
-                        "label_id": 1
+                        "label_id": 1,
+                        "action": "inserted"
                     }
                 ],
-                "message": "Successfully inserted 2 out of 2 labels"
+                "message": "Successfully processed 2 labels (1 inserted, 1 updated)"
             }
         } 
